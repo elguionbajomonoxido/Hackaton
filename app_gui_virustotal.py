@@ -1,25 +1,45 @@
-# -*- coding: utf-8 -*-
-"""
-Ventana PyQt5 para analizar URLs con VirusTotal usando analizador.py
+import streamlit as st
+import requests
+import pandas as pd
 
-Requisitos:
-    pip install PyQt5 requests
-Archivos:
-    - analizador.py  (tu módulo con la lógica de VirusTotal)
-    - app_gui_virustotal.py  (este archivo)
-"""
+# --- CONFIGURACIÓN DE LA PÁGINA ---
+st.set_page_config(
+    page_title="Detector de URLs - VirusTotal",
+    page_icon="🛡️",
+    layout="centered"
+)
 
-from PyQt5 import QtCore, QtGui, QtWidgets
-import analizador  # Usa tu código existente (analizar_url, VirusTotalError, etc.)
+# --- LÓGICA (Tu código original adaptado) ---
+# IMPORTANTE: En producción, usa st.secrets para la API KEY.
+# Por ahora la dejo aquí, pero lee la advertencia de seguridad al final del chat.
+API_KEY = "5ac5758d7316dfaf83261ef82fc13afd38a0bd64a39cc06330e6ab398d866575"
+VT_URL = "https://www.virustotal.com/api/v3/urls"
 
+class VirusTotalError(Exception):
+    pass
 
-# -------------------------- HELPERS DE LÓGICA -------------------------- #
+def analizar_url_virustotal(url: str) -> dict:
+    if not API_KEY:
+        raise VirusTotalError("No hay API key configurada.")
 
-def veredicto_desde_stats(stats: dict) -> str:
-    """
-    Misma lógica que en _veredicto_desde_stats de analizador.py,
-    pero copiada aquí para no depender de una función "privada".
-    """
+    headers = {"x-apikey": API_KEY}
+    
+    # 1. Enviar URL para escaneo
+    resp = requests.post(VT_URL, headers=headers, data={"url": url}, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    analysis_id = data["data"]["id"]
+
+    # 2. Obtener resultados del análisis
+    detalle = requests.get(
+        f"https://www.virustotal.com/api/v3/analyses/{analysis_id}",
+        headers=headers,
+        timeout=15,
+    )
+    detalle.raise_for_status()
+    return detalle.json()["data"]["attributes"]["stats"]
+
+def obtener_veredicto(stats: dict) -> str:
     malicious = stats.get("malicious", 0)
     suspicious = stats.get("suspicious", 0)
     harmless = stats.get("harmless", 0)
@@ -29,228 +49,72 @@ def veredicto_desde_stats(stats: dict) -> str:
         return "⚠️ URL MALICIOSA"
     if suspicious > 0:
         return "⚠️ URL SOSPECHOSA"
-    if harmless > 0 and malicious == 0 and suspicious == 0:
-        return "✅ Probablemente segura (mayoría harmless)"
-    if undetected > 0 and malicious == 0 and suspicious == 0:
-        return "❓ Sin detecciones, pero tampoco marcada como harmless"
+    if harmless > 0:
+        return "✅ Probablemente segura"
+    if undetected > 0:
+        return "❓ Sin detecciones conocidas"
+    return "❓ Veredicto incierto"
 
-    return "❓ Veredicto incierto, revisa los detalles"
+# --- INTERFAZ DE USUARIO (Streamlit) ---
 
+st.title("🛡️ Analizador de URLs con VirusTotal")
+st.markdown("Ingresa una URL sospechosa para analizarla en tiempo real.")
 
-# ------------------------------- UI PRINCIPAL ------------------------------- #
+# Inicializar historial en sesión
+if 'history' not in st.session_state:
+    st.session_state.history = []
 
-class Ui_MainWindow(object):
-    def setupUi(self, MainWindow):
-        MainWindow.setObjectName("MainWindow")
-        MainWindow.resize(900, 650)
+# Input de URL
+url_input = st.text_input("URL a analizar:", placeholder="https://ejemplo.com")
 
-        self._main_window = MainWindow
+if st.button("Analizar URL", type="primary"):
+    if not url_input:
+        st.warning("Por favor ingresa una URL.")
+    else:
+        # Añadir protocolo si falta
+        if not (url_input.startswith("http://") or url_input.startswith("https://")):
+            url_to_check = "https://" + url_input
+        else:
+            url_to_check = url_input
 
-        # --- Central widget y fuente base ---
-        self.centralwidget = QtWidgets.QWidget(MainWindow)
-        MainWindow.setCentralWidget(self.centralwidget)
+        with st.spinner('Consultando a VirusTotal...'):
+            try:
+                stats = analizar_url_virustotal(url_to_check)
+                veredicto = obtener_veredicto(stats)
+                
+                # Mostrar resultado grande
+                if "MALICIOSA" in veredicto or "SOSPECHOSA" in veredicto:
+                    st.error(f"Veredicto: {veredicto}")
+                elif "segura" in veredicto:
+                    st.success(f"Veredicto: {veredicto}")
+                else:
+                    st.info(f"Veredicto: {veredicto}")
 
-        base_font = QtGui.QFont()
-        base_font.setPointSize(11)
-        self.centralwidget.setFont(base_font)
+                # Métricas
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Harmless", stats.get('harmless', 0))
+                col2.metric("Malicious", stats.get('malicious', 0))
+                col3.metric("Suspicious", stats.get('suspicious', 0))
+                col4.metric("Undetected", stats.get('undetected', 0))
 
-        # -------------------- BLOQUE: INPUT URL + BOTÓN -------------------- #
+                # Guardar en historial
+                st.session_state.history.insert(0, {
+                    "URL": url_to_check,
+                    "Veredicto": veredicto,
+                    "Malicious": stats.get('malicious', 0),
+                    "Harmless": stats.get('harmless', 0)
+                })
 
-        self.labelUrl = QtWidgets.QLabel("URL a analizar:", self.centralwidget)
+            except requests.exceptions.RequestException as e:
+                st.error(f"Error de conexión: {e}")
+            except VirusTotalError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Ocurrió un error inesperado: {e}")
 
-        self.lineUrl = QtWidgets.QLineEdit(self.centralwidget)
-        self.lineUrl.setPlaceholderText("Ej: https://ejemplo.com/phishing")
-        self.lineUrl.setFixedHeight(42)
-        self.lineUrl.setStyleSheet("QLineEdit { padding: 8px; }")
-
-        # Validador simple de URL (permite letras, números y símbolos típicos de URLs)
-        url_regex = QtCore.QRegExp(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
-        self.lineUrl.setValidator(QtGui.QRegExpValidator(url_regex, self.lineUrl))
-
-        self.btnAnalizar = QtWidgets.QPushButton("Analizar URL", self.centralwidget)
-        self.btnAnalizar.setFixedHeight(42)
-        self.btnAnalizar.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
-
-        url_layout = QtWidgets.QHBoxLayout()
-        url_layout.setSpacing(10)
-        url_layout.addWidget(self.labelUrl)
-        url_layout.addWidget(self.lineUrl, 1)
-        url_layout.addWidget(self.btnAnalizar)
-
-        # -------------------- TABLA DE RESULTADOS -------------------- #
-        # Columnas: URL, harmless, malicious, suspicious, undetected, Veredicto
-
-        self.tableView = QtWidgets.QTableView(self.centralwidget)
-        self.tableView.setObjectName("tableView")
-        self.tableView.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.tableView.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self.tableView.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.tableView.horizontalHeader().setStretchLastSection(True)
-        self.tableView.verticalHeader().setVisible(False)
-        self.tableView.setAlternatingRowColors(True)
-
-        self.model = QtGui.QStandardItemModel(0, 6, self.tableView)
-        self.model.setHorizontalHeaderLabels([
-            "URL",
-            "Harmless",
-            "Malicious",
-            "Suspicious",
-            "Undetected",
-            "Veredicto",
-        ])
-        self.tableView.setModel(self.model)
-
-        header = self.tableView.horizontalHeader()
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)   # URL
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QtWidgets.QHeaderView.Stretch)   # Veredicto
-
-        # -------------------- DETALLE EN TEXTO -------------------- #
-
-        self.resultText = QtWidgets.QPlainTextEdit(self.centralwidget)
-        self.resultText.setReadOnly(True)
-        self.resultText.setPlaceholderText("Aquí se mostrarán los detalles del último análisis...")
-        self.resultText.setFixedHeight(170)
-
-        # -------------------- BOTÓN CERRAR -------------------- #
-
-        self.exitButton = QtWidgets.QPushButton("Cerrar", self.centralwidget)
-        self.exitButton.setFixedWidth(120)
-        self.exitButton.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
-
-        # -------------------- STATUS BAR -------------------- #
-
-        self.statusbar = QtWidgets.QStatusBar(MainWindow)
-        MainWindow.setStatusBar(self.statusbar)
-
-        # -------------------- LAYOUT PRINCIPAL -------------------- #
-
-        main_layout = QtWidgets.QVBoxLayout(self.centralwidget)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(14)
-
-        main_layout.addLayout(url_layout)
-        main_layout.addWidget(self.tableView, 1)
-        main_layout.addWidget(self.resultText, 0)
-
-        bottom_layout = QtWidgets.QHBoxLayout()
-        bottom_layout.addStretch(1)
-        bottom_layout.addWidget(self.exitButton)
-        main_layout.addLayout(bottom_layout)
-
-        # -------------------- SEÑALES -------------------- #
-
-        self.btnAnalizar.clicked.connect(self.analizar_url_gui)
-        self.exitButton.clicked.connect(MainWindow.close)
-
-        MainWindow.setWindowTitle("Detector de URLs sospechosas – VirusTotal")
-
-    # -------------------- LÓGICA PRINCIPAL -------------------- #
-
-    def analizar_url_gui(self):
-        """Lee la URL del QLineEdit y llama al analizador de VirusTotal."""
-        url = self.lineUrl.text().strip()
-
-        if not url:
-            self._warn("El campo 'URL a analizar' no puede estar vacío.")
-            return
-
-        # Si no tiene esquema, asumimos https://
-        if not (url.startswith("http://") or url.startswith("https://")):
-            url = "https://" + url
-
-        # Deshabilitar botón mientras se analiza
-        self.btnAnalizar.setEnabled(False)
-        self._info("Analizando URL con VirusTotal...")
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-
-        try:
-            stats = analizador.analizar_url(url)
-        except analizador.VirusTotalError as e:
-            self._warn(str(e))
-            return
-        except Exception as e:
-            # Cualquier otro error (network, HTTP 400, etc.)
-            self._warn(f"Error al analizar la URL:\n{e}")
-            return
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-            self.btnAnalizar.setEnabled(True)
-
-        # Mostrar en tabla + texto
-        self._mostrar_resultado(url, stats)
-
-    def _mostrar_resultado(self, url: str, stats: dict):
-        """Actualiza la tabla y el panel de texto con los resultados."""
-        harmless = int(stats.get("harmless", 0))
-        malicious = int(stats.get("malicious", 0))
-        suspicious = int(stats.get("suspicious", 0))
-        undetected = int(stats.get("undetected", 0))
-        veredicto = veredicto_desde_stats(stats)
-
-        # --- Agregar fila a la tabla ---
-        row_items = []
-
-        it_url = QtGui.QStandardItem(url)
-        row_items.append(it_url)
-
-        def num_item(value: int) -> QtGui.QStandardItem:
-            item = QtGui.QStandardItem(str(value))
-            item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            return item
-
-        row_items.append(num_item(harmless))
-        row_items.append(num_item(malicious))
-        row_items.append(num_item(suspicious))
-        row_items.append(num_item(undetected))
-
-        it_veredicto = QtGui.QStandardItem(veredicto)
-        row_items.append(it_veredicto)
-
-        self.model.appendRow(row_items)
-
-        # --- Mostrar detalle en el panel de texto ---
-        texto = [
-            "== Resultado (URL – VirusTotal) ==",
-            f"URL        : {url}",
-            f"harmless   : {harmless}",
-            f"malicious  : {malicious}",
-            f"suspicious : {suspicious}",
-            f"undetected : {undetected}",
-            "-" * 40,
-            f"Veredicto  : {veredicto}",
-            ]
-        self.resultText.setPlainText("\n".join(texto))
-
-        # Mensajes al usuario
-        self._info("Análisis completado.")
-        QtWidgets.QMessageBox.information(
-            self._main_window,
-            "Análisis completado",
-            f"Veredicto para la URL:\n\n{url}\n\n{veredicto}",
-        )
-
-    # -------------------- HELPERS UI -------------------- #
-
-    def _info(self, text: str):
-        self.statusbar.showMessage(text, 3000)
-
-    def _warn(self, text: str):
-        QtWidgets.QMessageBox.warning(self._main_window, "Advertencia", text)
-        self.statusbar.showMessage(text, 4000)
-
-
-# ------------------------------- EJECUCIÓN ------------------------------- #
-
-if __name__ == "__main__":
-    import sys
-
-    app = QtWidgets.QApplication(sys.argv)
-    MainWindow = QtWidgets.QMainWindow()
-    ui = Ui_MainWindow()
-    ui.setupUi(MainWindow)
-    MainWindow.show()
-    sys.exit(app.exec_())
+# Tabla de Historial
+if st.session_state.history:
+    st.divider()
+    st.subheader("Historial de esta sesión")
+    df = pd.DataFrame(st.session_state.history)
+    st.dataframe(df, use_container_width=True)
