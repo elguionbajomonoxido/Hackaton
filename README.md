@@ -1,4 +1,4 @@
-# Proyecto Python - Instrucciones de ejecución
+# Hackea las Fake News - Instrucciones de ejecución
 
 Este repositorio contiene una aplicación Python cuyo punto de entrada principal es `main.py`. También incluye `analizador.py` y archivos relacionados con compilación (PyInstaller), por ejemplo `main.spec` y la carpeta `build/`.
 
