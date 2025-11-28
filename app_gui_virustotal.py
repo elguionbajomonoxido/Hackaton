@@ -57,7 +57,7 @@ def obtener_veredicto(stats: dict) -> str:
 
 # --- INTERFAZ DE USUARIO (Streamlit) ---
 
-st.title("🛡️ Analizador de URLs con VirusTotal")
+st.title("🛡️ Analizador de URLs - VirusTotal")
 st.markdown("Ingresa una URL sospechosa para analizarla en tiempo real.")
 
 # Inicializar historial en sesión
@@ -118,3 +118,4 @@ if st.session_state.history:
     st.subheader("Historial de esta sesión")
     df = pd.DataFrame(st.session_state.history)
     st.dataframe(df, use_container_width=True)
+
