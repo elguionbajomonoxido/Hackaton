@@ -11,175 +11,190 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- TU API KEY ---
-API_KEY = "5ac5758d7316dfaf83261ef82fc13afd38a0bd64a39cc06330e6ab398d866575"
+# --- TUS API KEYS ---
+VT_API_KEY = "5ac5758d7316dfaf83261ef82fc13afd38a0bd64a39cc06330e6ab398d866575"
+NEWS_API_KEY = "2042dec7997b4ae88cd9786d1d2ddbe1"  # ✅ Tu clave de NewsAPI agregada
 
 VT_URL_SCAN = "https://www.virustotal.com/api/v3/urls"
 VT_URL_ANALYSIS = "https://www.virustotal.com/api/v3/analyses"
+NEWS_API_ENDPOINT = "https://newsapi.org/v2/everything"
 
-# --- BASE DE DATOS DE FUENTES CONFIABLES (JSON INTEGRADO) ---
-# Aquí puedes agregar más dominios según necesites
-BD_FUENTES_CONFIABLES = {
-    "noticias": {
-        "bbc.com": "BBC News (Internacional)",
-        "cnn.com": "CNN (Internacional)",
-        "elpais.com": "El País (España/Latam)",
-        "elmundo.es": "El Mundo (España)",
-        "nytimes.com": "The New York Times",
-        "reuters.com": "Reuters (Agencia de noticias)",
-        "latercera.com": "La Tercera (Chile)",
-        "emol.com": "El Mercurio (Chile)",
-        "eluniversal.com.mx": "El Universal (México)",
-        "clarin.com": "Clarín (Argentina)"
-    },
-    "tecnologia": {
-        "github.com": "GitHub (Código oficial)",
-        "stackoverflow.com": "StackOverflow (Comunidad Dev)",
-        "python.org": "Python Software Foundation",
-        "microsoft.com": "Microsoft Oficial",
-        "google.com": "Google Oficial"
-    },
-    "enciclopedias": {
-        "wikipedia.org": "Wikipedia (Enciclopedia Libre)",
-        "britannica.com": "Encyclopedia Britannica"
-    }
+# --- BASE DE DATOS LOCAL (Respaldo VIP) ---
+BD_FUENTES_VIP = {
+    "bbc.com": "BBC News",
+    "cnn.com": "CNN",
+    "elpais.com": "El País",
+    "elmundo.es": "El Mundo",
+    "nytimes.com": "New York Times",
+    "wikipedia.org": "Wikipedia",
+    "gob.cl": "Gobierno de Chile",
+    "gob.mx": "Gobierno de México",
+    "who.int": "OMS (Organización Mundial de la Salud)",
+    "un.org": "Naciones Unidas"
 }
 
-# --- FUNCIONES DE UTILIDAD ---
+# --- FUNCIONES ---
 
-def verificar_fuente_oficial(url):
-    """
-    Extrae el dominio y verifica si está en nuestra base de datos JSON de confianza.
-    """
+def limpiar_dominio(url):
     try:
-        # Extraer el dominio limpio (ej: www.google.com -> google.com)
-        parsed_uri = urlparse(url)
-        domain = parsed_uri.netloc.replace("www.", "").lower()
-        
-        # Buscar en las categorías
-        for categoria, sitios in BD_FUENTES_CONFIABLES.items():
-            if domain in sitios:
-                return True, sitios[domain], categoria.capitalize()
-            
-            # Intento extra para subdominios (ej: chile.as.com -> as.com)
-            parts = domain.split('.')
-            if len(parts) > 2:
-                root_domain = f"{parts[-2]}.{parts[-1]}"
-                if root_domain in sitios:
-                     return True, sitios[root_domain], categoria.capitalize()
-
-        return False, None, None
+        parsed = urlparse(url)
+        # Devuelve 'bbc.com' de 'https://www.bbc.com/news'
+        domain = parsed.netloc.replace("www.", "")
+        return domain
     except:
-        return False, None, None
+        return ""
+
+def verificar_reconocimiento_mediatico(domain):
+    """
+    Consulta a NewsAPI si este dominio produce noticias reconocidas.
+    """
+    if not NEWS_API_KEY:
+        return None, "Falta API Key de NewsAPI"
+
+    try:
+        # Buscamos noticias recientes SOLAMENTE de este dominio
+        params = {
+            "domains": domain,
+            "apiKey": NEWS_API_KEY,
+            "pageSize": 1,  # Solo necesitamos saber si existe al menos 1 noticia reciente
+            "language": "es" # Priorizamos español, puedes quitarlo para global
+        }
+        # Primera búsqueda estricta
+        resp = requests.get(NEWS_API_ENDPOINT, params=params, timeout=5)
+        data = resp.json()
+        
+        if data.get("status") == "ok":
+            total_results = data.get("totalResults", 0)
+            if total_results > 0:
+                return True, f"Medio reconocido (NewsAPI encontró {total_results} artículos recientes)"
+            else:
+                # Intento secundario: buscar sin filtro de idioma por si es internacional (ej. TechCrunch)
+                params.pop("language")
+                resp_global = requests.get(NEWS_API_ENDPOINT, params=params, timeout=5)
+                data_global = resp_global.json()
+                if data_global.get("totalResults", 0) > 0:
+                    return True, "Medio reconocido internacionalmente."
+                
+                return False, "El medio no aparece en los registros globales de noticias recientes."
+        else:
+            return False, "Error en la consulta a NewsAPI."
+    except Exception as e:
+        return False, f"Error de conexión: {e}"
 
 def analizar_url_virustotal(url: str):
-    if not API_KEY:
-        return None, "Error: No hay API Key configurada."
+    if not VT_API_KEY:
+        return None, "Error: No hay API Key de VirusTotal."
 
-    headers = {"x-apikey": API_KEY}
+    headers = {"x-apikey": VT_API_KEY}
     
     # 1. Enviar URL
-    data = {"url": url}
     try:
-        resp = requests.post(VT_URL_SCAN, headers=headers, data=data, timeout=15)
+        resp = requests.post(VT_URL_SCAN, headers=headers, data={"url": url}, timeout=15)
         resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        return None, f"Error de conexión: {e}"
+    except Exception as e:
+        return None, f"Error VT: {e}"
         
-    resp_json = resp.json()
-    analysis_id = resp_json["data"]["id"]
+    analysis_id = resp.json()["data"]["id"]
     
-    # 2. Esperar resultados
-    max_retries = 10 
-    with st.spinner('Consultando inteligencia de amenazas...'):
-        for _ in range(max_retries):
-            analysis_resp = requests.get(f"{VT_URL_ANALYSIS}/{analysis_id}", headers=headers, timeout=10)
-            if analysis_resp.status_code == 200:
-                analysis_data = analysis_resp.json()
-                if analysis_data["data"]["attributes"]["status"] == "completed":
-                    return analysis_data["data"]["attributes"]["stats"], None
-            time.sleep(2)
+    # 2. Polling (Esperar respuesta)
+    for _ in range(10):
+        resp = requests.get(f"{VT_URL_ANALYSIS}/{analysis_id}", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data["data"]["attributes"]["status"] == "completed":
+                return data["data"]["attributes"]["stats"], None
+        time.sleep(2)
             
-    return None, "El análisis tardó demasiado."
+    return None, "Tiempo de espera agotado en VirusTotal."
 
 def interpretar_riesgo(stats):
     malicious = stats.get('malicious', 0)
     suspicious = stats.get('suspicious', 0)
-    harmless = stats.get('harmless', 0)
-
-    if malicious >= 3:
-        nivel = "🔴 RIESGO CRÍTICO"
-        explicacion = f"¡PELIGRO! {malicious} motores confirman malware. NO ACCEDER."
-        color = "error"
-    elif malicious > 0:
-        nivel = "🟠 RIESGO ALTO"
-        explicacion = f"Precaución. {malicious} motor(es) detectaron amenazas."
-        color = "error"
-    elif suspicious > 0:
-        nivel = "🟡 RIESGO MEDIO"
-        explicacion = f"Sitio sospechoso ({suspicious} alertas). Navega con cuidado."
-        color = "warning"
+    
+    if malicious >= 2:
+        return "🔴 PELIGROSO", "error"
+    elif malicious == 1 or suspicious > 0:
+        return "🟡 SOSPECHOSO", "warning"
     else:
-        nivel = "🟢 TÉCNICAMENTE SEGURO"
-        explicacion = f"Limpio de virus según {harmless} motores."
-        color = "success"
+        return "🟢 SEGURO", "success"
 
-    return nivel, explicacion, color
-
-# --- INTERFAZ GRÁFICA ---
-
-st.title("🛡️ Verificador de URLs & Fake News")
-st.markdown("Analiza la seguridad técnica y verifica si la fuente es un medio reconocido.")
+# --- INTERFAZ ---
+st.title("🕵️ Validador de Noticias y Seguridad")
+st.markdown("Verifica si un enlace es seguro y si proviene de un medio de comunicación real.")
 
 if 'history' not in st.session_state:
     st.session_state.history = []
 
-url_input = st.text_input("URL a investigar:", placeholder="Ej: https://www.bbc.com/mundo")
+url_input = st.text_input("Ingresa la URL de la noticia:", placeholder="https://...")
 
-if st.button("Analizar Fuente y Riesgos", type="primary"):
+if st.button("Analizar Veracidad y Riesgo", type="primary"):
     if not url_input:
-        st.warning("Por favor ingresa una URL.")
+        st.warning("Escribe una URL.")
     else:
-        url_to_check = url_input if url_input.startswith(("http://", "https://")) else "http://" + url_input
-        
-        # --- PASO 1: VERIFICACIÓN DE IDENTIDAD (Base de datos interna) ---
-        es_oficial, nombre_sitio, categoria = verificar_fuente_oficial(url_to_check)
-        
-        if es_oficial:
-            st.info(f"✅ **FUENTE VERIFICADA:** Este sitio está identificado en nuestra base de datos como **{nombre_sitio}** ({categoria}). Es una fuente de información reconocida.")
+        # Preparar URL
+        if not (url_input.startswith("http://") or url_input.startswith("https://")):
+            url_to_check = "https://" + url_input
         else:
-            st.caption("ℹ️ Esta URL no está en nuestra lista de medios verificados (esto es normal para blogs o sitios pequeños, pero ten precaución con noticias sensacionalistas).")
+            url_to_check = url_input
+            
+        domain = limpiar_dominio(url_to_check)
+        
+        col_izq, col_der = st.columns(2)
+        
+        # Declarar variables por defecto
+        es_vip = False
+        es_reconocido = False
 
-        # --- PASO 2: ANÁLISIS DE VIRUS (VirusTotal) ---
-        stats, error = analizar_url_virustotal(url_to_check)
+        # --- ANÁLISIS 1: REPUTACIÓN DEL MEDIO ---
+        with col_izq:
+            st.subheader("📰 Fuente")
+            
+            # A) Chequeo VIP Local
+            for d_vip, nombre in BD_FUENTES_VIP.items():
+                if d_vip in domain:
+                    st.success(f"✅ **Verificado:** {nombre}")
+                    st.caption("Fuente oficial en nuestra Lista Blanca interna.")
+                    es_vip = True
+                    break
+            
+            # B) Chequeo NewsAPI (Si no es VIP)
+            if not es_vip:
+                es_reconocido, msg_news = verificar_reconocimiento_mediatico(domain)
+                if es_reconocido:
+                    st.info(f"✅ **Medio Activo:** {domain}")
+                    st.caption("Este sitio publica noticias indexadas globalmente (Validado por NewsAPI).")
+                else:
+                    st.warning(f"❓ **Fuente Desconocida:** {domain}")
+                    st.caption("No encontramos noticias recientes de este dominio en medios globales. Ten precaución.")
 
-        if error:
-            st.error(error)
-        else:
-            nivel, explicacion, color_msg = interpretar_riesgo(stats)
-
-            if color_msg == "error":
-                st.error(f"### {nivel}\n{explicacion}")
-            elif color_msg == "warning":
-                st.warning(f"### {nivel}\n{explicacion}")
+        # --- ANÁLISIS 2: CIBERSEGURIDAD ---
+        with col_der:
+            st.subheader("🛡️ Seguridad")
+            stats, error = analizar_url_virustotal(url_to_check)
+            
+            if error:
+                st.error("Error en VirusTotal")
+                texto_riesgo = "Error"
             else:
-                st.success(f"### {nivel}\n{explicacion}")
+                texto_riesgo, color = interpretar_riesgo(stats)
+                if color == "error":
+                    st.error(f"**{texto_riesgo}**")
+                elif color == "warning":
+                    st.warning(f"**{texto_riesgo}**")
+                else:
+                    st.success(f"**{texto_riesgo}**")
+                
+                st.metric("Motores Maliciosos", stats.get('malicious', 0))
 
-            # Datos duros
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Maliciosos", stats.get('malicious', 0))
-            c2.metric("Sospechosos", stats.get('suspicious', 0))
-            c3.metric("Seguros", stats.get('harmless', 0))
+        # Guardar historial
+        estado_fuente = "✅ Oficial" if es_vip else ("✅ Medio Activo" if es_reconocido else "❓ Desconocido")
+        
+        st.session_state.history.insert(0, {
+            "Dominio": domain,
+            "Seguridad": texto_riesgo,
+            "Fuente": estado_fuente
+        })
 
-            # Guardar historial
-            st.session_state.history.insert(0, {
-                "URL": url_to_check,
-                "Fuente Oficial": "✅ Sí" if es_oficial else "No",
-                "Riesgo": nivel
-            })
-
-# Tabla de historial
 if st.session_state.history:
     st.divider()
-    st.caption("Historial de sesión:")
     st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
